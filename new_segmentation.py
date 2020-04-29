@@ -257,7 +257,7 @@ if args.action == 'train':
     # pdb.set_trace()
     nums_tag = len(tag2idx)
 
-    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+    config = tf.ConfigProto(allow_soft_placement=True)
 
 
     transducer = None

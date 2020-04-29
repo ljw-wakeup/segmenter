@@ -352,15 +352,16 @@ class Model(object):
 
 			random.shuffle(samples)
 			# pdb.set_trace()
-			for sample in samples:
-				c_len = len(sample[0][0])
-				idx = self.bucket_dit[c_len]
-				real_batch_size = self.real_batches[idx]
-				model = self.input_v1[idx] +self.input_v2[idx]+ self.output_[idx]
-				# pdb.set_trace()
-				Batch.train(sess=sess[0], model=model, batch_size=real_batch_size, config=self.train_step[idx],
-							lr=self.l_rate, lrv=lr_r, dr=self.drop_out, drv=self.drop_out_v, data=list(sample),
-							verbose=False)
+			for idx, sample in enumerate(samples):
+				with tf.device('/gpu:{}'.format(idx % self.num_gpus)):
+					c_len = len(sample[0][0])
+					idx = self.bucket_dit[c_len]
+					real_batch_size = self.real_batches[idx]
+					model = self.input_v1[idx] +self.input_v2[idx]+ self.output_[idx]
+					# pdb.set_trace()
+					Batch.train(sess=sess[0], model=model, batch_size=real_batch_size, config=self.train_step[idx],
+								lr=self.l_rate, lrv=lr_r, dr=self.drop_out, drv=self.drop_out_v, data=list(sample),
+								verbose=False)
 
 			predictions = []
 
