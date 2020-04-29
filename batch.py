@@ -5,7 +5,7 @@ import numpy as np
 import pdb
 
 
-def train(sess, model, batch_size, config, lr, lrv, data, dr=None, drv=None, verbose=False):
+def train(sess, model, batch_size_h, batch_size, config, lr, lrv, data, dr=None, drv=None, verbose=False,num_gpus = 1):
     assert len(data) == len(model)
     num_items = len(data)
     samples = zip(*data)
@@ -15,22 +15,24 @@ def train(sess, model, batch_size, config, lr, lrv, data, dr=None, drv=None, ver
     model.append(lr)
     if dr is not None:
         model.append(dr)
+    model.append(batch_size_h)
     while start_idx < len(samples):
         if verbose:
             print '%d' % (start_idx * 100 / n_samples) + '%'
-        next_batch_samples = samples[start_idx:start_idx + batch_size]
+        next_batch_samples = samples[start_idx:start_idx + batch_size * num_gpus]
         real_batch_size = len(next_batch_samples)
-        if real_batch_size < batch_size:
-            next_batch_samples.extend(samples[:batch_size - real_batch_size])
+        if real_batch_size < batch_size * num_gpus:
+            next_batch_samples.extend(samples[:batch_size*num_gpus - real_batch_size])
         holders = []
         for item in range(num_items):
             holders.append([s[item] for s in next_batch_samples])
         holders.append(lrv)
         if dr is not None:
             holders.append(drv)
-        # pdb.set_trace()
+       	holders.append(batch_size)        
+# pdb.set_trace()
         sess.run(config, feed_dict={m: h for m, h in zip(model, holders)})
-        start_idx += batch_size
+        start_idx += batch_size * num_gpus
 
 
 def softmax(x):
@@ -39,20 +41,23 @@ def softmax(x):
     return anp / np.sum(anp, axis=dim, keepdims=True)
 
 
-def predict(sess, model, data, dr=None, transitions=None, crf=True, decode_sess=None, scores=None, decode_holders=None,
-            argmax=True, batch_size=100, ensemble=False, verbose=False):
+def predict(sess, model, data, batch_size_h, dr=None, transitions=None, crf=True, decode_sess=None, scores=None, decode_holders=None,
+            argmax=True, num_gpus=1, ensemble=False, verbose=False):
     en_num = None
     if ensemble:
         en_num = len(sess)
     num_items = len(data)
     input_v = model[:num_items]
+    
     if dr is not None:
         input_v.append(dr)
+    input_v.append(batch_size_h)
     predictions = model[num_items:]
     output = [[] for _ in range(len(predictions))]
     samples = zip(*data)
     start_idx = 0
     n_samples = len(samples)
+    batch_size = n_samples/num_gpus + 1
     if crf > 0:
         trans = []
         for i in range(len(predictions)):
@@ -66,13 +71,14 @@ def predict(sess, model, data, dr=None, transitions=None, crf=True, decode_sess=
     while start_idx < n_samples:
         if verbose:
             print '%d' % (start_idx*100/n_samples) + '%'
-        next_batch_input = samples[start_idx:start_idx + batch_size]
-        batch_size = len(next_batch_input)
+        next_batch_input = samples[start_idx:start_idx + batch_size*num_gpus]
+        batch_size_all = len(next_batch_input)
         holders= []
         for item in range(num_items):
             holders.append([s[item] for s in next_batch_input])
         if dr is not None:
             holders.append(0.0)
+        holders.append(batch_size)
         length = np.sum(np.sign(holders[0]) , axis=1) -1
         if crf > 0:
             assert transitions is not None and len(transitions) == len(predictions) and len(scores) == len(decode_holders)
@@ -84,10 +90,10 @@ def predict(sess, model, data, dr=None, transitions=None, crf=True, decode_sess=
                     ob = en_obs/en_num
                 else:
                     ob = sess.run(predictions[i], feed_dict={i: h for i, h in zip(input_v, holders)})
-                pre_values = [ob, trans[i], length, batch_size]
+                pre_values = [ob, trans[i], length, batch_size_all]
                 assert len(pre_values) == len(decode_holders[i])
                 max_scores, max_scores_pre = decode_sess.run(scores[i], feed_dict={i: h for i, h in zip(decode_holders[i], pre_values)})
-                output[i].extend(toolbox.viterbi(max_scores, max_scores_pre, length, batch_size))
+                output[i].extend(toolbox.viterbi(max_scores, max_scores_pre, length, batch_size_all))
         elif argmax:
             for i in range(len(predictions)):
                 pre = sess.run(predictions[i], feed_dict={i: h for i, h in zip(input_v, holders)})

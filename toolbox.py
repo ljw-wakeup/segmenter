@@ -1687,6 +1687,17 @@ def get_real_batch(counts, b_size):
     return real_batch_sizes
 
 
+def get_real_batch_new(counts, b_size, num_gpus):
+    real_batch_sizes = []
+    for c in counts:
+        if c < b_size*(num_gpus-1)+1:
+            s = (c/num_gpus) + 1
+            real_batch_sizes.append(s)
+        else:
+            real_batch_sizes.append(b_size)
+    return real_batch_sizes
+
+
 def merge_bucket(x):
     out = []
     for item in x:

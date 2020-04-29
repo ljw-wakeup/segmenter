@@ -15,7 +15,7 @@ import pdb
 class Model(object):
 
 	def __init__(self, nums_chars, nums_tags, buckets_char, counts=None, batch_size=10, crf=1, ngram=None,
-				 sent_seg=False, is_space=True, emb_path=None, tag_scheme='BIES'):
+				sent_seg=False, is_space=True, emb_path=None, tag_scheme='BIES', num_gpus = 1):
 		self.nums_chars = nums_chars
 		self.nums_tags = nums_tags
 		self.buckets_char = buckets_char
@@ -46,6 +46,7 @@ class Model(object):
 		self.output = []
 		self.output_ = []
 		self.output_p = []
+		self.num_gpus = num_gpus
 
 		if self.crf > 0:
 			self.transition_char = tf.get_variable('transitions_char', [self.nums_tags + 1, self.nums_tags + 1])
@@ -55,7 +56,7 @@ class Model(object):
 		while len(self.buckets_char) > len(self.counts):
 			self.counts.append(1)
 
-		self.real_batches = toolbox.get_real_batch(self.counts, self.batch_size)
+		self.real_batches = toolbox.get_real_batch_new(self.counts, self.batch_size, self.num_gpus)
 
 	def main_graph(self, trained_model, scope, emb_dim, cell, rnn_dim, rnn_num, drop_out=0.5, emb=None):
 		if trained_model is not None:
@@ -69,8 +70,9 @@ class Model(object):
 			f_model.close()
 
 		# define shared weights and variables
-
+		batch_size_h = tf.placeholder(tf.int32, [], name = 'batch_size_holder')
 		dr = tf.placeholder(tf.float32, [], name='drop_out_holder')
+		self.batch_size_h = batch_size_h
 		self.drop_out = dr
 		self.drop_out_v = drop_out
 		# pdb.set_trace()
@@ -102,19 +104,28 @@ class Model(object):
 			if idx == 1:
 				scope.reuse_variables()
 			t1 = time()
+			batch_size = self.real_batches[idx]
+			
 
 			input_v1 = tf.placeholder(tf.int32, [None, bucket], name='input_1' + str(bucket))
 			input_v2 = tf.placeholder(tf.int32, [None, bucket], name='input_2' + str(bucket))
 			self.input_v1.append([input_v1])
 			self.input_v2.append([input_v2])
+			#output = None
+			output = []
+			for i in range(self.num_gpus):
+				with tf.device('/gpu:{}'.format(i)):
+					input_1 = input_v1[i*batch_size_h:(i+1)*batch_size_h]
 
-			emb_set1 = []
-			emb_set2 = []
+					input_2 = input_v2[i*batch_size_h:(i+1)*batch_size_h]
+				
+					emb_set1 = []
+					emb_set2 = []
 
-			word_out1 = self.emb_layer(input_v1)
-			word_out2 = self.emb_layer(input_v2)
-			emb_set1.append(word_out1)
-			emb_set2.append(word_out2)
+					word_out1 = self.emb_layer(input_1)
+					word_out2 = self.emb_layer(input_2)
+					emb_set1.append(word_out1)
+					emb_set2.append(word_out2)
 
 			# if self.ngram is not None:
 			# 	for i in range(len(self.ngram)):
@@ -123,21 +134,27 @@ class Model(object):
 			# 		gram_out = self.gram_layers[i](input_g)
 			# 		emb_set.append(gram_out)
 
-			if len(emb_set1) > 1:
-				emb_out1 = tf.concat(axis=2, values=emb_set1)
-				emb_out2 = tf.concat(axis=2, values=emb_set2)
+					if len(emb_set1) > 1:
+						emb_out1 = tf.concat(axis=2, values=emb_set1)
+						emb_out2 = tf.concat(axis=2, values=emb_set2)
 
-			else:
-				emb_out1 = emb_set1[0]
-				emb_out2 = emb_set2[0]
+					else:
+						emb_out1 = emb_set1[0]
+						emb_out2 = emb_set2[0]
 
-			emb_out1 = DropoutLayer(dr)(emb_out1)
-			emb_out2 = DropoutLayer(dr)(emb_out2)
+					emb_out1 = DropoutLayer(dr)(emb_out1)
+					emb_out2 = DropoutLayer(dr)(emb_out2)
 
-			rnn_out = BiLSTM(rnn_dim, fw_cell=fw_rnn_cell, bw_cell=bw_rnn_cell, p=dr, name='BiLSTM' + str(bucket),
+					rnn_out = BiLSTM(rnn_dim, fw_cell=fw_rnn_cell, bw_cell=bw_rnn_cell, p=dr, name='BiLSTM' + str(bucket),
 							 scope='BiRNN')(emb_out1, emb_out2, input_v1)
 
-			output = output_wrapper(rnn_out)
+					output_g = output_wrapper(rnn_out)
+					# if output == None:
+						# output = output_g
+					# else:
+						# output = tf.concat([output,output_g],axis = 0)
+			#pdb.set_trace()
+					output.append(output_g)
 			self.output.append([output])
 
 			self.output_.append([tf.placeholder(tf.int32, [None, bucket-1], name='tags' + str(bucket))])
@@ -151,6 +168,22 @@ class Model(object):
 
 		self.saver = tf.train.Saver()
 
+	
+	def average_gradients(self, tower_grads):
+		average_grads = []
+		for grad_and_vars in zip(*tower_grads):
+			grads = []
+			for g, _ in grad_and_vars:
+				expend_g = tf.expand_dims(g, 0)
+				grads.append(expend_g)
+			grad = tf.concat(grads, 0)
+			grad = tf.reduce_mean(grad, 0)
+			v = grad_and_vars[0][1]
+			grad_and_var = (grad, v)
+			average_grads.append(grad_and_var)
+		return average_grads
+
+
 	def config(self, optimizer, decay, lr_v=None, momentum=None, clipping=True, max_gradient_norm=5.0):
 
 		self.decay = decay
@@ -161,15 +194,22 @@ class Model(object):
 		if self.crf > 0:
 			loss_function = losses.crf_loss
 			for i in range(len(self.input_v1)):
-				bucket_loss = losses.loss_wrapper(self.output[i], self.output_[i], loss_function,
+				bucket_loss = []
+				#pdb.set_trace()
+				for j in range(self.num_gpus):
+					#pdb.set_trace()
+					with tf.device('/gpu:{}'.format(j)):
+						output_ = self.output_[i][0][j * self.real_batches[i]:(j + 1) * self.real_batches[i]]			
+						gpu_loss = losses.loss_wrapper([self.output[i][0][j]], [output_], loss_function,
 												  transitions=[self.transition_char], nums_tags=[self.nums_tags],
 												  batch_size=self.real_batches[i])
+						bucket_loss.append(gpu_loss)
 				loss.append(bucket_loss)
-		else:
-			loss_function = losses.sparse_cross_entropy
-			for output, output_ in zip(self.output, self.output_):
-				bucket_loss = losses.loss_wrapper(output, output_, loss_function)
-				loss.append(bucket_loss)
+		#else:
+		#	loss_function = losses.sparse_cross_entropy
+		#	for output, output_ in zip(self.output, self.output_):
+		#		bucket_loss = losses.loss_wrapper(output, output_, loss_function)
+		#		loss.append(bucket_loss)
 
 		l_rate = tf.placeholder(tf.float32, [], name='learning_rate_holder')
 		self.l_rate = l_rate
@@ -193,12 +233,19 @@ class Model(object):
 
 		for idx, l in enumerate(loss):
 			t2 = time()
-			if clipping:
-				gradients = tf.gradients(l, self.params)
-				clipped_gradients, norm = tf.clip_by_global_norm(gradients, max_gradient_norm)
-				train_step = optimizer.apply_gradients(zip(clipped_gradients, self.params))
-			else:
-				train_step = optimizer.minimize(l)
+			tower_grads = []
+			for i in range(self.num_gpus):
+				with tf.device('/gpu:{}'.format(i)):
+					if clipping:
+						gradients = tf.gradients(l[i], self.params)
+						tower_grads.append(gradients)
+			#pdb.set_trace()
+			grads = self.average_gradients(tower_grads)
+			pdb.set_trace()
+			clipped_gradients, norm = tf.clip_by_global_norm(grads, max_gradient_norm)
+			train_step = optimizer.apply_gradients(list(zip(clipped_gradients, self.params)))
+			#else:
+			#	train_step = optimizer.minimize(l)
 			print 'Bucket %d, %f seconds' % (idx + 1, time() - t2)
 			self.train_step.append(train_step)
 
@@ -351,12 +398,12 @@ class Model(object):
 			for sample in samples:
 				c_len = len(sample[0][0])
 				idx = self.bucket_dit[c_len]
-				real_batch_size = self.real_batches[idx]
+				real_batch_size = self.num_gpus * self.batch_size
 				model = self.input_v1[idx] +self.input_v2[idx]+ self.output_[idx]
 				# pdb.set_trace()
-				Batch.train(sess=sess[0], model=model, batch_size=real_batch_size, config=self.train_step[idx],
+				Batch.train(sess=sess[0], model=model,batch_size_h = self.batch_size_h, batch_size = self.real_batches[idx], config=self.train_step[idx],
 							lr=self.l_rate, lrv=lr_r, dr=self.drop_out, drv=self.drop_out_v, data=list(sample),
-							verbose=False)
+							verbose=False, num_gpus = self.num_gpus)
 
 			predictions = []
 
@@ -576,7 +623,7 @@ class Model(object):
 	def predict(self, data_v, sess, model, index=None, argmax=True, batch_size=100, ensemble=None, verbose=False):
 		if self.crf:
 			assert index is not None
-			predictions = Batch.predict(sess=sess[0], decode_sess=sess[1], model=model,
+			predictions = Batch.predict(sess=sess[0], decode_sess=sess[1], model=model,batch_size_h = self.batch_size_h,
 										transitions=[self.transition_char], crf=self.crf, scores=self.scores[index],
 										decode_holders=self.decode_holders[index], batch_size=batch_size,
 										data = data_v, dr=self.drop_out, ensemble=ensemble, verbose=verbose)

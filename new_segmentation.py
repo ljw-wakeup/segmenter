@@ -101,6 +101,17 @@ args = parser.parse_args()
 sys = reload(sys)
 sys.setdefaultencoding('utf-8')
 print 'Encoding: ', sys.getdefaultencoding()
+def get_available_gpus():
+
+    from tensorflow.python.client import device_lib as _device_lib
+    local_device_protos = _device_lib.list_local_devices()
+    return [x.name for x in local_device_protos if x.device_type == 'GPU']
+ 
+num_gpus = len(get_available_gpus())
+print num_gpus
+if num_gpus == 0:
+    os._exit(0)
+pdb.set_trace()
 
 if args.action == 'train':
     assert args.new_path is not None
@@ -282,7 +293,7 @@ if args.action == 'train':
         with tf.variable_scope("tagger") as scope:
             model = Model(nums_chars=len(char2idx) + 2, nums_tags=nums_tag, buckets_char=b_lens, counts=b_count,
                           crf=args.crf, ngram=nums_grams, batch_size=args.train_batch, sent_seg=args.sent_seg,
-                          is_space=is_space, emb_path=args.embeddings, tag_scheme=args.tags)
+                          is_space=is_space, emb_path=args.embeddings, tag_scheme=args.tags, num_gpus = num_gpus)
 
             model.main_graph(trained_model=path_ + '/' + model_file + '_model', scope=scope,
                              emb_dim=emb_dim, cell=args.cell, rnn_dim=args.rnn_cell_dimension,
