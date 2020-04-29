@@ -101,7 +101,13 @@ args = parser.parse_args()
 sys = reload(sys)
 sys.setdefaultencoding('utf-8')
 print 'Encoding: ', sys.getdefaultencoding()
+def get_available_gpus():
+    from tensorflow.python.client import device_lib as _device_lib
+    local_device_protos = _device_lib.list_local_devices()
+    return [x.name for x in local_device_protos if x.device_type == 'GPU']
 
+num_gpus = len(get_available_gpus())
+print num_gpus
 if args.action == 'train':
     assert args.new_path is not None
     path_ = args.new_path
@@ -251,8 +257,8 @@ if args.action == 'train':
     # pdb.set_trace()
     nums_tag = len(tag2idx)
 
-    config = tf.ConfigProto(allow_soft_placement=True)
-    gpu_config = "/gpu:" + str(args.gpu)
+    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+
 
     transducer = None
     transducer_graph = None
@@ -282,7 +288,7 @@ if args.action == 'train':
         with tf.variable_scope("tagger") as scope:
             model = Model(nums_chars=len(char2idx) + 2, nums_tags=nums_tag, buckets_char=b_lens, counts=b_count,
                           crf=args.crf, ngram=nums_grams, batch_size=args.train_batch, sent_seg=args.sent_seg,
-                          is_space=is_space, emb_path=args.embeddings, tag_scheme=args.tags)
+                          is_space=is_space, emb_path=args.embeddings, tag_scheme=args.tags, num_gpus = num_gpus)
 
             model.main_graph(trained_model=path_ + '/' + model_file + '_model', scope=scope,
                              emb_dim=emb_dim, cell=args.cell, rnn_dim=args.rnn_cell_dimension,
@@ -312,35 +318,35 @@ if args.action == 'train':
     else:
         sess = [main_sess, None]
 
-    with tf.device(gpu_config):
 
-        if transducer is not None:
-            print 'Building transducer...'
-            t = time()
-            trans_sess = tf.Session(config=config, graph=transducer_graph)
-            trans_sess.run(trans_init)
-            trans_model.train(transducer[0], transducer[1], transducer[2], transducer[3], args.learning_rate_trans,
-                              char2idx, trans_sess, args.epochs_trans, batch_size=10, reset=args.reset_trans)
-            sess.append(trans_sess)
-            print 'Done. Time consumed: %d seconds' % int(time() - t)
-            print 'Training the main segmenter..'
-        main_sess.run(init)
-        print 'Initialisation...'
-        print 'Done. Time consumed: %d seconds' % int(time() - t)
+
+    if transducer is not None:
+        print 'Building transducer...'
         t = time()
+        trans_sess = tf.Session(config=config, graph=transducer_graph)
+        trans_sess.run(trans_init)
+        trans_model.train(transducer[0], transducer[1], transducer[2], transducer[3], args.learning_rate_trans,
+                          char2idx, trans_sess, args.epochs_trans, batch_size=10, reset=args.reset_trans)
+        sess.append(trans_sess)
+        print 'Done. Time consumed: %d seconds' % int(time() - t)
+        print 'Training the main segmenter..'
+    main_sess.run(init)
+    print 'Initialisation...'
+    print 'Done. Time consumed: %d seconds' % int(time() - t)
+    t = time()
 
-        b_dev_raw = []
-        for language_dir in dir_names:
-            path = path_ + '/' + language_dir
-            for line in codecs.open(path + '/raw_dev.txt', 'r', encoding='utf-8'):
-                line.strip()
-                b_dev_raw.append(line)
+    b_dev_raw = []
+    for language_dir in dir_names:
+        path = path_ + '/' + language_dir
+        for line in codecs.open(path + '/raw_dev.txt', 'r', encoding='utf-8'):
+            line.strip()
+            b_dev_raw.append(line)
 
-        #b_dev_raw = [line.strip() for line in codecs.open(path_ + '/raw_dev.txt', 'r', encoding='utf-8')]
+    #b_dev_raw = [line.strip() for line in codecs.open(path_ + '/raw_dev.txt', 'r', encoding='utf-8')]
 
-        model.train(b_train_x1,b_train_x2, b_train_y, b_dev_x1,b_dev_x2, b_dev_raw, b_dev_y_gold, idx2tag, idx2char, unk_chars_idx, trans_dict,
-                    sess, args.epochs, path_ + '/' + model_file + '_weights', transducer=trans_model,
-                    lr=args.learning_rate, decay=args.decay_rate, sent_seg=args.sent_seg, outpath=args.output_path)
+    model.train(b_train_x1,b_train_x2, b_train_y, b_dev_x1,b_dev_x2, b_dev_raw, b_dev_y_gold, idx2tag, idx2char, unk_chars_idx, trans_dict,
+            sess, args.epochs, path_ + '/' + model_file + '_weights', transducer=trans_model,
+                lr=args.learning_rate, decay=args.decay_rate, sent_seg=args.sent_seg, outpath=args.output_path)
 
 else:
 
@@ -521,8 +527,8 @@ else:
             for k in range(len(raw_x)):
                 raw_x[k] = toolbox.pad_zeros(raw_x[k], max_step)
 
-    config = tf.ConfigProto(allow_soft_placement=True)
-    gpu_config = "/gpu:" + str(args.gpu)
+    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+    #gpu_config = "/gpu:" + str(args.gpu)
 
     transducer = None
     transducer_graph = None
@@ -597,10 +603,8 @@ else:
 
     else:
         sess = [main_sess, None]
-
-    with tf.device(gpu_config):
+    with tf.device('/cpu:0'):
         ens_model = None
-        print 'Loading weights....'
         if args.ensemble:
             for i in range(1, idx):
                 print 'Ensemble: ' + str(i)
